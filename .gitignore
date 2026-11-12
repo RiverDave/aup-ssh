@@ -1,0 +1,16 @@
+# Allowlist: only tool source is tracked. Never commit cookies.json, id_ed25519*, known_hosts.
+*
+!.gitignore
+!README
+!proxy.py
+!server.py
+!terminal-command.py
+!test_proxy.py
+!test_server.py
+!vscode-bootstrap.sh
+!vscode-preflight.sh
+!ssh_config.example
+!bin/
+!bin/aup-ssh
+!scripts/
+!scripts/reap-aup-terminals.py

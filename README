@@ -1,0 +1,26 @@
+aup-ssh
+
+ssh into my AUP Learning Cloud workspace. the platform only gives you
+jupyterlab / code-server in the browser, which gets painful for long llvm
+builds and scripted test runs.
+
+server.py runs inside the workspace as my user, asyncssh on localhost only,
+key auth. proxy.py is the ProxyCommand on my laptop, it pipes the ssh stream
+through the existing jupyter/code-server proxy using my logged in session.
+on notebook images there's no port proxy so it goes through a jupyter
+terminal instead (deleted when the connection closes, mostly).
+
+doesn't start or stop compute, no sudo, nothing listening publicly.
+
+start the server once from a browser terminal:
+  nohup python3 ~/.local/share/aup-ssh/server.py > ~/.local/share/aup-ssh/server.log 2>&1 < /dev/null &
+
+then:
+  bin/aup-ssh 'hostname'
+
+scripts/reap-aup-terminals.py cleans up terminals left behind by dropped
+connections.
+
+cookies.json and the keys sit in the same dir, gitignored.
+
+tests: python -m unittest discover -p 'test_*.py'

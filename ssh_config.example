@@ -1,0 +1,16 @@
+Host aup
+    HostName aup-dublin
+    User jovyan
+    IdentityFile ~/.local/share/aup-cloud/id_ed25519
+    IdentitiesOnly yes
+    BatchMode yes
+    StrictHostKeyChecking yes
+    HostKeyAlias aup-dublin
+    UserKnownHostsFile ~/.local/share/aup-cloud/known_hosts
+    ConnectTimeout 15
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+    ControlMaster no
+    ControlPath none
+    ControlPersist no
+    ProxyCommand ~/.local/share/aup-cloud/venv/bin/python ~/.local/share/aup-cloud/proxy.py
