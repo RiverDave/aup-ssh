@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import re
+import signal
 import sys
 from http.cookies import SimpleCookie
 from pathlib import Path
@@ -10,6 +11,9 @@ import aiohttp
 from yarl import URL
 
 ROOT = Path(__file__).resolve().parent
+BASE = 'https://dub.aupcloud.io/user/github%3Ariverdave'
+# Relay gives up after this long without input; ssh_config's 30s keepalive keeps live sessions under it.
+RELAY_IDLE_SECONDS = 120
 
 class PortalError(Exception):
     pass
@@ -53,20 +57,20 @@ async def check_workspace(session, origin='https://dub.aupcloud.io'):
         raise PortalError('AUP workspace is stopped. Start it in the portal; no compute was launched.')
     await fetch('/user/github%3Ariverdave/')
 
-async def jupyter_proxy(session, reader):
-    base = 'https://dub.aupcloud.io/user/github%3Ariverdave'
+async def jupyter_proxy(session, reader, base=BASE):
     cookies = session.cookie_jar.filter_cookies(URL(base + '/', encoded=True))
     xsrf = cookies.get('_xsrf')
     headers = {'X-XSRFToken': xsrf.value if xsrf else '', 'Origin': 'https://dub.aupcloud.io'}
     async with session.post(URL(base + '/api/terminals', encoded=True), json={}, headers=headers) as response:
         response.raise_for_status()
         name = (await response.json())['name']
-    code = '''import base64,os,select,socket,sys,tty
+    code = f'''import base64,os,select,socket,sys,tty
 tty.setraw(0)
 s=socket.create_connection(('127.0.0.1',2222))
 print('AUPREADY',flush=True)
 while True:
- ready,_,_=select.select([s,sys.stdin.buffer],[],[])
+ ready,_,_=select.select([s,sys.stdin.buffer],[],[],{RELAY_IDLE_SECONDS})
+ if not ready: break
  if s in ready:
   data=s.recv(65536)
   if not data: break
@@ -76,7 +80,7 @@ while True:
   if not line: break
   s.sendall(base64.b64decode(line))
 '''
-    command = "python3 -u -c \"import base64; exec(base64.b64decode('" + base64.b64encode(code.encode()).decode() + "'))\"\r"
+    command = "exec python3 -u -c \"import base64; exec(base64.b64decode('" + base64.b64encode(code.encode()).decode() + "'))\"\r"
     try:
         url = base.replace('https:', 'wss:') + '/terminals/websocket/' + name
         async with session.ws_connect(URL(url, encoded=True), headers=headers, max_msg_size=0) as ws:
@@ -115,9 +119,14 @@ while True:
                 task.result()
     finally:
         async with session.delete(URL(base + '/api/terminals/' + name, encoded=True), headers=headers) as response:
-            response.raise_for_status()
+            if response.status != 404:  # already gone after the relay's idle timeout
+                response.raise_for_status()
 
 async def main():
+    # ssh sends SIGHUP to its ProxyCommand on exit; cancel so the terminal still gets deleted
+    task = asyncio.current_task()
+    for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+        asyncio.get_running_loop().add_signal_handler(sig, task.cancel)
     records = json.loads((ROOT / 'cookies.json').read_text())
     reader = asyncio.StreamReader()
     protocol = asyncio.StreamReaderProtocol(reader)
@@ -159,6 +168,8 @@ async def main():
 if __name__ == '__main__':
     try:
         asyncio.run(main())
+    except asyncio.CancelledError:
+        pass
     except PortalError as exc:
         print(f'aup-ssh: {exc}', file=sys.stderr)
         raise SystemExit(1)

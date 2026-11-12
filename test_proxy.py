@@ -1,3 +1,6 @@
+import asyncio
+import base64
+import re
 import unittest
 from aiohttp import web, ClientSession
 from yarl import URL
@@ -80,6 +83,76 @@ class PortalTests(unittest.IsolatedAsyncioTestCase):
         cookie = jar.filter_cookies(URL('https://dub.aupcloud.io/hub/home'))['login-test']
         self.assertEqual(cookie.value, '2|signed-test')
         self.assertEqual(cookie.coded_value, '"2|signed-test"')
+
+
+class TerminalCleanupTests(unittest.IsolatedAsyncioTestCase):
+    """Native-terminal fallback must not leave Jupyter terminals behind."""
+
+    async def asyncSetUp(self):
+        self.deleted = []
+        self.stdin = []
+        self.delete_status = 204
+        app = web.Application()
+        app.router.add_post('/user/u/api/terminals', self.create)
+        app.router.add_get('/user/u/terminals/websocket/{name}', self.websocket)
+        app.router.add_delete('/user/u/api/terminals/{name}', self.delete)
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, '127.0.0.1', 0)
+        await site.start()
+        self.base = 'http://127.0.0.1:' + str(site._server.sockets[0].getsockname()[1]) + '/user/u'
+
+    async def asyncTearDown(self):
+        await self.runner.cleanup()
+
+    async def create(self, request):
+        return web.json_response({'name': '1'})
+
+    async def delete(self, request):
+        self.deleted.append(request.match_info['name'])
+        return web.Response(status=self.delete_status)
+
+    async def websocket(self, request):
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        await ws.send_json(['stdout', '$ '])
+        async for msg in ws:
+            self.stdin.append(msg.json()[1])
+            await ws.send_json(['stdout', 'AUPREADY\r\n'])
+        return ws
+
+    async def test_cancel_deletes_terminal(self):
+        # main() turns ssh's SIGHUP into task cancellation; cleanup must still run
+        reader = asyncio.StreamReader()
+        async with ClientSession() as session:
+            task = asyncio.create_task(proxy.jupyter_proxy(session, reader, self.base))
+            while not self.stdin:
+                await asyncio.sleep(0.01)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertEqual(self.deleted, ['1'])
+
+    async def test_relay_replaces_shell_and_times_out(self):
+        reader = asyncio.StreamReader()
+        reader.feed_eof()
+        async with ClientSession() as session:
+            await proxy.jupyter_proxy(session, reader, self.base)
+        command = self.stdin[0]
+        self.assertTrue(command.startswith('exec python3 '))
+        code = base64.b64decode(re.search(r"b64decode\('([^']+)'\)", command).group(1)).decode()
+        self.assertIn('[],%d)' % proxy.RELAY_IDLE_SECONDS, code)
+        self.assertIn('if not ready: break', code)
+        compile(code, 'relay', 'exec')
+        self.assertEqual(self.deleted, ['1'])
+
+    async def test_terminal_already_gone_is_not_an_error(self):
+        self.delete_status = 404
+        reader = asyncio.StreamReader()
+        reader.feed_eof()
+        async with ClientSession() as session:
+            await proxy.jupyter_proxy(session, reader, self.base)
+        self.assertEqual(self.deleted, ['1'])
 
 
 if __name__ == '__main__':
